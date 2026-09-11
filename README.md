@@ -22,7 +22,11 @@ monorepo-typescript
   number next to it (`6/11`) is its position, read from the queue bot's comment.
 - `❌` — the PR had `automerge` removed today, i.e. it got kicked out.
 - Click any line to open the PR on GitHub. That is the only interaction.
-- Optionally, a `✅` count of your PRs merged today.
+Two optional counts, both off by default, toggled under "Repos" in the popover:
+
+- `✅` — your PRs merged today.
+- `👀` — open PRs where a review is requested from you, directly or through a
+  team you are in. It is a count only; the PRs are not listed.
 
 It polls every 5 minutes, and on launch, on opening the menu, and on Refresh.
 

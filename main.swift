@@ -17,9 +17,11 @@ final class Model: ObservableObject {
     @Published var queued: [PR] = []
     @Published var failed: [PR] = []
     @Published var mergedCount = 0
+    @Published var reviewCount = 0
     @Published var error: String?
     @Published var repos: [String] = UserDefaults.standard.stringArray(forKey: "repos") ?? []
     @Published var showMerged = UserDefaults.standard.bool(forKey: "showMerged")
+    @Published var showReviews = UserDefaults.standard.bool(forKey: "showReviews")
 
     private var timer: Timer?
 
@@ -33,6 +35,7 @@ final class Model: ObservableObject {
     func save() {
         UserDefaults.standard.set(repos, forKey: "repos")
         UserDefaults.standard.set(showMerged, forKey: "showMerged")
+        UserDefaults.standard.set(showReviews, forKey: "showReviews")
     }
 
     func add(_ raw: String) {
@@ -63,21 +66,23 @@ final class Model: ObservableObject {
         var bits = ["\(queued.count) ⏳"]
         if showMerged { bits.append("\(mergedCount) ✅") }
         bits.append("\(failed.count) ❌")
+        if showReviews { bits.append("\(reviewCount) 👀") }
         return bits.joined(separator: " ")
     }
 
     func refresh() {
         let repos = self.repos
         guard !repos.isEmpty else {
-            queued = []; failed = []; mergedCount = 0; error = nil
+            queued = []; failed = []; mergedCount = 0; reviewCount = 0; error = nil
             return
         }
         Task.detached {
             let result = Self.fetch(repos: repos)
             await MainActor.run {
                 switch result {
-                case .success(let (q, f, m)):
-                    self.queued = q; self.failed = f; self.mergedCount = m; self.error = nil
+                case .success(let (q, f, m, r)):
+                    self.queued = q; self.failed = f; self.mergedCount = m; self.reviewCount = r
+                    self.error = nil
                 case .failure(let e):
                     self.error = e
                 }
@@ -92,7 +97,7 @@ final class Model: ObservableObject {
         return String(body[r]).replacingOccurrences(of: "Position ", with: "")
     }
 
-    nonisolated private static func fetch(repos: [String]) -> Result<([PR], [PR], Int), String> {
+    nonisolated private static func fetch(repos: [String]) -> Result<([PR], [PR], Int, Int), String> {
         let scope = repos.map { "repo:\($0)" }.joined(separator: " ")
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
@@ -107,6 +112,8 @@ final class Model: ObservableObject {
                 nodes { ... on UnlabeledEvent { createdAt label { name } } } }
               comments(last: 15) { nodes { body } } } } }
           merged: search(query: "is:pr is:merged author:@me merged:>=\(today) \(scope)", type: ISSUE, first: 1) {
+            issueCount }
+          review: search(query: "is:pr is:open review-requested:@me \(scope)", type: ISSUE, first: 1) {
             issueCount } }
         """
 
@@ -132,7 +139,9 @@ final class Model: ObservableObject {
               let open = d["open"] as? [String: Any],
               let nodes = open["nodes"] as? [[String: Any]],
               let merged = d["merged"] as? [String: Any],
-              let mergedCount = merged["issueCount"] as? Int
+              let mergedCount = merged["issueCount"] as? Int,
+              let review = d["review"] as? [String: Any],
+              let reviewCount = review["issueCount"] as? Int
         else { return .failure("unexpected response") }
 
         let iso = ISO8601DateFormatter()
@@ -162,7 +171,7 @@ final class Model: ObservableObject {
             }
             if kickedToday { failed.append(pr) }
         }
-        return .success((queued, failed, mergedCount))
+        return .success((queued, failed, mergedCount, reviewCount))
     }
 }
 
@@ -186,7 +195,7 @@ struct RepoSection: View {
         Link(destination: URL(string: pr.url)!) {
             HStack(alignment: .top, spacing: 6) {
                 Text(icon)
-                Text("#\(pr.id)")
+                Text(verbatim: "#\(pr.id)")
                 if let p = pr.position { Text(p).foregroundStyle(.secondary) }
             }
         }
@@ -236,6 +245,8 @@ struct ContentView: View {
                     }
                     Toggle("Show merged today", isOn: $model.showMerged)
                         .onChange(of: model.showMerged) { model.save() }
+                    Toggle("Show reviews requested", isOn: $model.showReviews)
+                        .onChange(of: model.showReviews) { model.save() }
                 }
                 .padding(.top, 6)
             }
