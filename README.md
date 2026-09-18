@@ -22,11 +22,22 @@ monorepo-typescript
   number next to it (`6/11`) is its position, read from the queue bot's comment.
 - `❌` — the PR had `automerge` removed today, i.e. it got kicked out.
 - Click any line to open the PR on GitHub. That is the only interaction.
-Two optional counts, both off by default, toggled under "Repos" in the popover:
+Two optional counts, both off by default, toggled under "Repos & PRs" in the popover:
 
 - `✅` — your PRs merged today.
-- `👀` — open PRs where a review is requested from you, directly or through a
-  team you are in. It is a count only; the PRs are not listed.
+- `👀` — open PRs where someone requested a review from you by name. Requests
+  that went to a whole team are not counted. It is a count only; the PRs are
+  not listed.
+
+## Watching other people's PRs
+
+I also merge PRs I did not write. Under "Repos & PRs", paste a PR URL into the
+second field and hit "Watch". Watched PRs are tracked by number rather than by
+author, so they show up in the same `⏳` / `❌` lines and feed the same counts,
+including `✅` when they merge. The repo does not have to be in the repo list.
+
+The URL is trimmed down to the PR, so anything GitHub hands you works:
+`.../pull/9285`, `.../pull/9285/files`, `.../pull/9285/commits/abc123`.
 
 It polls every 5 minutes, and on launch, on opening the menu, and on Refresh.
 
@@ -43,7 +54,7 @@ It polls every 5 minutes, and on launch, on opening the menu, and on Refresh.
 open PRQueue.app
 ```
 
-Add repos from the "Repos" section in the popover — paste a repo URL or an
-`owner/name` slug.
+Add repos from the "Repos & PRs" section in the popover — paste a repo URL or an
+`owner/name` slug. Paste a PR URL in the field below it to watch a single PR.
 
 To start it at login, add `PRQueue.app` in System Settings → General → Login Items.
