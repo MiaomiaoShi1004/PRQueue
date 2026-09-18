@@ -20,6 +20,7 @@ final class Model: ObservableObject {
     @Published var reviewCount = 0
     @Published var error: String?
     @Published var repos: [String] = UserDefaults.standard.stringArray(forKey: "repos") ?? []
+    @Published var watched: [String] = UserDefaults.standard.stringArray(forKey: "watched") ?? []
     @Published var showMerged = UserDefaults.standard.bool(forKey: "showMerged")
     @Published var showReviews = UserDefaults.standard.bool(forKey: "showReviews")
 
@@ -34,6 +35,7 @@ final class Model: ObservableObject {
 
     func save() {
         UserDefaults.standard.set(repos, forKey: "repos")
+        UserDefaults.standard.set(watched, forKey: "watched")
         UserDefaults.standard.set(showMerged, forKey: "showMerged")
         UserDefaults.standard.set(showReviews, forKey: "showReviews")
     }
@@ -49,6 +51,29 @@ final class Model: ObservableObject {
         repos.removeAll { $0 == slug }
         save()
         refresh()
+    }
+
+    func addWatched(_ raw: String) {
+        guard let ref = Self.prRef(raw), !watched.contains(ref) else { return }
+        watched.append(ref)
+        save()
+        refresh()
+    }
+
+    func removeWatched(_ ref: String) {
+        watched.removeAll { $0 == ref }
+        save()
+        refresh()
+    }
+
+    static func prRef(_ raw: String) -> String? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let m = s.range(of: #"([\w.-]+)/([\w.-]+)(/pull/|#)(\d+)"#, options: .regularExpression)
+        else { return nil }
+        let hit = String(s[m])
+        let parts = hit.split(whereSeparator: { $0 == "/" || $0 == "#" })
+        guard parts.count >= 3, let n = Int(parts.last!) else { return nil }
+        return "\(parts[0])/\(parts[1])#\(n)"
     }
 
     static func slug(_ raw: String) -> String? {
@@ -72,12 +97,13 @@ final class Model: ObservableObject {
 
     func refresh() {
         let repos = self.repos
-        guard !repos.isEmpty else {
+        let watched = self.watched
+        guard !repos.isEmpty || !watched.isEmpty else {
             queued = []; failed = []; mergedCount = 0; reviewCount = 0; error = nil
             return
         }
         Task.detached {
-            let result = Self.fetch(repos: repos)
+            let result = Self.fetch(repos: repos, watched: watched)
             await MainActor.run {
                 switch result {
                 case .success(let (q, f, m, r)):
@@ -97,25 +123,42 @@ final class Model: ObservableObject {
         return String(body[r]).replacingOccurrences(of: "Position ", with: "")
     }
 
-    nonisolated private static func fetch(repos: [String]) -> Result<([PR], [PR], Int, Int), String> {
+    nonisolated private static func fetch(repos: [String], watched: [String]) -> Result<([PR], [PR], Int, Int), String> {
         let scope = repos.map { "repo:\($0)" }.joined(separator: " ")
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
         let today = df.string(from: Date())
         let startOfToday = Calendar.current.startOfDay(for: Date())
 
-        let query = """
-        { open: search(query: "is:pr is:open author:@me \(scope)", type: ISSUE, first: 100) {
-            nodes { ... on PullRequest { number title url repository { nameWithOwner }
-              labels(first: 30) { nodes { name } }
-              timelineItems(last: 50, itemTypes: [UNLABELED_EVENT]) {
-                nodes { ... on UnlabeledEvent { createdAt label { name } } } }
-              comments(last: 15) { nodes { body } } } } }
-          merged: search(query: "is:pr is:merged author:@me merged:>=\(today) \(scope)", type: ISSUE, first: 1) {
-            issueCount }
-          review: search(query: "is:pr is:open review-requested:@me \(scope)", type: ISSUE, first: 1) {
-            issueCount } }
+        let prFields = """
+        number title url repository { nameWithOwner } state mergedAt
+        labels(first: 30) { nodes { name } }
+        timelineItems(last: 50, itemTypes: [UNLABELED_EVENT]) {
+          nodes { ... on UnlabeledEvent { createdAt label { name } } } }
+        comments(last: 15) { nodes { body } }
         """
+
+        var parts: [String] = []
+        if !repos.isEmpty {
+            parts.append("""
+            open: search(query: "is:pr is:open author:@me \(scope)", type: ISSUE, first: 100) {
+              nodes { ... on PullRequest { \(prFields) } } }
+            merged: search(query: "is:pr is:merged author:@me merged:>=\(today) \(scope)", type: ISSUE, first: 1) {
+              issueCount }
+            review: search(query: "is:pr is:open user-review-requested:@me \(scope)", type: ISSUE, first: 1) {
+              issueCount }
+            """)
+        }
+        for (i, ref) in watched.enumerated() {
+            let bits = ref.split(whereSeparator: { $0 == "/" || $0 == "#" })
+            guard bits.count == 3, let n = Int(bits[2]) else { continue }
+            parts.append("""
+            w\(i): repository(owner: "\(bits[0])", name: "\(bits[1])") {
+              pullRequest(number: \(n)) { \(prFields) } }
+            """)
+        }
+        guard !parts.isEmpty else { return .success(([], [], 0, 0)) }
+        let query = "{ " + parts.joined(separator: "\n") + " }"
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -135,16 +178,29 @@ final class Model: ObservableObject {
         }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let d = json["data"] as? [String: Any],
-              let open = d["open"] as? [String: Any],
-              let nodes = open["nodes"] as? [[String: Any]],
-              let merged = d["merged"] as? [String: Any],
-              let mergedCount = merged["issueCount"] as? Int,
-              let review = d["review"] as? [String: Any],
-              let reviewCount = review["issueCount"] as? Int
+              let d = json["data"] as? [String: Any]
         else { return .failure("unexpected response") }
 
+        var nodes = ((d["open"] as? [String: Any])?["nodes"] as? [[String: Any]]) ?? []
+        var mergedCount = ((d["merged"] as? [String: Any])?["issueCount"] as? Int) ?? 0
+        let reviewCount = ((d["review"] as? [String: Any])?["issueCount"] as? Int) ?? 0
+
         let iso = ISO8601DateFormatter()
+
+        for i in watched.indices {
+            guard let n = (d["w\(i)"] as? [String: Any])?["pullRequest"] as? [String: Any] else { continue }
+            switch n["state"] as? String {
+            case "OPEN":
+                nodes.append(n)
+            case "MERGED":
+                if let at = n["mergedAt"] as? String, let date = iso.date(from: at), date >= startOfToday {
+                    mergedCount += 1
+                }
+            default:
+                break
+            }
+        }
+
         var queued: [PR] = [], failed: [PR] = []
 
         for n in nodes {
@@ -171,6 +227,7 @@ final class Model: ObservableObject {
             }
             if kickedToday { failed.append(pr) }
         }
+
         return .success((queued, failed, mergedCount, reviewCount))
     }
 }
@@ -206,19 +263,27 @@ struct RepoSection: View {
 struct ContentView: View {
     @ObservedObject var model: Model
     @State private var newRepo = ""
+    @State private var newPR = ""
     @State private var showSettings = false
+
+    var sections: [String] {
+        var seen: [String] = []
+        for repo in model.repos + (model.failed + model.queued).map(\.repo)
+        where !seen.contains(repo) { seen.append(repo) }
+        return seen
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let e = model.error {
                 Text(e).font(.caption).foregroundStyle(.red).lineLimit(3)
             }
-            if model.repos.isEmpty {
+            if model.repos.isEmpty && model.watched.isEmpty {
                 Text("Add a repo below.").foregroundStyle(.secondary)
             } else if model.queued.isEmpty && model.failed.isEmpty {
                 Text("Nothing in the queue.").foregroundStyle(.secondary)
             } else {
-                ForEach(model.repos, id: \.self) { repo in
+                ForEach(sections, id: \.self) { repo in
                     RepoSection(repo: repo,
                                 queued: model.queued.filter { $0.repo == repo },
                                 failed: model.failed.filter { $0.repo == repo })
@@ -227,7 +292,7 @@ struct ContentView: View {
 
             Divider()
 
-            DisclosureGroup("Repos", isExpanded: $showSettings) {
+            DisclosureGroup("Repos & PRs", isExpanded: $showSettings) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(model.repos, id: \.self) { repo in
                         HStack {
@@ -242,6 +307,21 @@ struct ContentView: View {
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { model.add(newRepo); newRepo = "" }
                         Button("Add") { model.add(newRepo); newRepo = "" }
+                    }
+                    Divider()
+                    ForEach(model.watched, id: \.self) { ref in
+                        HStack {
+                            Text(ref).font(.caption)
+                            Spacer()
+                            Button { model.removeWatched(ref) } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                    HStack {
+                        TextField("paste PR URL", text: $newPR)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { model.addWatched(newPR); newPR = "" }
+                        Button("Watch") { model.addWatched(newPR); newPR = "" }
                     }
                     Toggle("Show merged today", isOn: $model.showMerged)
                         .onChange(of: model.showMerged) { model.save() }
