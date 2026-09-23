@@ -17,6 +17,7 @@ final class Model: ObservableObject {
     @Published var queued: [PR] = []
     @Published var failed: [PR] = []
     @Published var mergedCount = 0
+    @Published var merged: [PR] = []
     @Published var reviewCount = 0
     @Published var error: String?
     @Published var repos: [String] = UserDefaults.standard.stringArray(forKey: "repos") ?? []
@@ -106,9 +107,14 @@ final class Model: ObservableObject {
             let result = Self.fetch(repos: repos, watched: watched)
             await MainActor.run {
                 switch result {
-                case .success(let (q, f, m, r)):
+                case .success(let (q, f, m, r, mg, staleRefs)):
                     self.queued = q; self.failed = f; self.mergedCount = m; self.reviewCount = r
+                    self.merged = mg
                     self.error = nil
+                    if !staleRefs.isEmpty {
+                        self.watched.removeAll { staleRefs.contains($0) }
+                        self.save()
+                    }
                 case .failure(let e):
                     self.error = e
                 }
@@ -123,7 +129,7 @@ final class Model: ObservableObject {
         return String(body[r]).replacingOccurrences(of: "Position ", with: "")
     }
 
-    nonisolated private static func fetch(repos: [String], watched: [String]) -> Result<([PR], [PR], Int, Int), String> {
+    nonisolated private static func fetch(repos: [String], watched: [String]) -> Result<([PR], [PR], Int, Int, [PR], [String]), String> {
         let scope = repos.map { "repo:\($0)" }.joined(separator: " ")
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd"
@@ -157,7 +163,7 @@ final class Model: ObservableObject {
               pullRequest(number: \(n)) { \(prFields) } }
             """)
         }
-        guard !parts.isEmpty else { return .success(([], [], 0, 0)) }
+        guard !parts.isEmpty else { return .success(([], [], 0, 0, [], [])) }
         let query = "{ " + parts.joined(separator: "\n") + " }"
 
         let p = Process()
@@ -186,6 +192,8 @@ final class Model: ObservableObject {
         let reviewCount = ((d["review"] as? [String: Any])?["issueCount"] as? Int) ?? 0
 
         let iso = ISO8601DateFormatter()
+        var mergedPRs: [PR] = []
+        var staleRefs: [String] = []
 
         for i in watched.indices {
             guard let n = (d["w\(i)"] as? [String: Any])?["pullRequest"] as? [String: Any] else { continue }
@@ -193,8 +201,16 @@ final class Model: ObservableObject {
             case "OPEN":
                 nodes.append(n)
             case "MERGED":
-                if let at = n["mergedAt"] as? String, let date = iso.date(from: at), date >= startOfToday {
+                let isToday = (n["mergedAt"] as? String).flatMap(iso.date(from:)).map { $0 >= startOfToday } ?? false
+                if isToday,
+                   let number = n["number"] as? Int,
+                   let title = n["title"] as? String,
+                   let url = n["url"] as? String,
+                   let repo = (n["repository"] as? [String: Any])?["nameWithOwner"] as? String {
+                    mergedPRs.append(PR(id: number, title: title, url: url, repo: repo, position: nil))
                     mergedCount += 1
+                } else {
+                    staleRefs.append(watched[i])
                 }
             default:
                 break
@@ -228,7 +244,7 @@ final class Model: ObservableObject {
             if kickedToday { failed.append(pr) }
         }
 
-        return .success((queued, failed, mergedCount, reviewCount))
+        return .success((queued, failed, mergedCount, reviewCount, mergedPRs, staleRefs))
     }
 }
 
@@ -236,14 +252,16 @@ struct RepoSection: View {
     let repo: String
     let queued: [PR]
     let failed: [PR]
+    let merged: [PR]
 
     var body: some View {
-        if !queued.isEmpty || !failed.isEmpty {
+        if !queued.isEmpty || !failed.isEmpty || !merged.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text(repo.split(separator: "/").last.map(String.init) ?? repo)
                     .font(.caption).foregroundStyle(.secondary)
                 ForEach(failed) { row("❌", $0) }
                 ForEach(queued) { row("⏳", $0) }
+                ForEach(merged) { row("✅", $0) }
             }
         }
     }
@@ -268,7 +286,7 @@ struct ContentView: View {
 
     var sections: [String] {
         var seen: [String] = []
-        for repo in model.repos + (model.failed + model.queued).map(\.repo)
+        for repo in model.repos + (model.failed + model.queued + model.merged).map(\.repo)
         where !seen.contains(repo) { seen.append(repo) }
         return seen
     }
@@ -280,13 +298,14 @@ struct ContentView: View {
             }
             if model.repos.isEmpty && model.watched.isEmpty {
                 Text("Add a repo below.").foregroundStyle(.secondary)
-            } else if model.queued.isEmpty && model.failed.isEmpty {
+            } else if model.queued.isEmpty && model.failed.isEmpty && model.merged.isEmpty {
                 Text("Nothing in the queue.").foregroundStyle(.secondary)
             } else {
                 ForEach(sections, id: \.self) { repo in
                     RepoSection(repo: repo,
                                 queued: model.queued.filter { $0.repo == repo },
-                                failed: model.failed.filter { $0.repo == repo })
+                                failed: model.failed.filter { $0.repo == repo },
+                                merged: model.showMerged ? model.merged.filter { $0.repo == repo } : [])
                 }
             }
 

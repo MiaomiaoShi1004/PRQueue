@@ -36,6 +36,11 @@ second field and hit "Watch". Watched PRs are tracked by number rather than by
 author, so they show up in the same `⏳` / `❌` lines and feed the same counts,
 including `✅` when they merge. The repo does not have to be in the repo list.
 
+A watched PR that merges today is listed as a `✅` line (when "Show merged
+today" is on) and stays there for the rest of the day, so the count and the
+list agree. It drops off the watch list on the first poll after that day ends —
+the list tidies itself up without ever under-reporting what merged.
+
 The URL is trimmed down to the PR, so anything GitHub hands you works:
 `.../pull/9285`, `.../pull/9285/files`, `.../pull/9285/commits/abc123`.
 
