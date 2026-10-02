@@ -278,11 +278,15 @@ struct RepoSection: View {
     }
 }
 
+final class Draft: ObservableObject {
+    @Published var newRepo = ""
+    @Published var newPR = ""
+    @Published var showSettings = false
+}
+
 struct ContentView: View {
     @ObservedObject var model: Model
-    @State private var newRepo = ""
-    @State private var newPR = ""
-    @State private var showSettings = false
+    @StateObject private var draft = Draft()
 
     var sections: [String] {
         var seen: [String] = []
@@ -311,7 +315,7 @@ struct ContentView: View {
 
             Divider()
 
-            DisclosureGroup("Repos & PRs", isExpanded: $showSettings) {
+            DisclosureGroup("Repos & PRs", isExpanded: $draft.showSettings) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(model.repos, id: \.self) { repo in
                         HStack {
@@ -322,10 +326,10 @@ struct ContentView: View {
                         }
                     }
                     HStack {
-                        TextField("paste repo URL", text: $newRepo)
+                        TextField("paste repo URL", text: $draft.newRepo)
                             .textFieldStyle(.roundedBorder)
-                            .onSubmit { model.add(newRepo); newRepo = "" }
-                        Button("Add") { model.add(newRepo); newRepo = "" }
+                            .onSubmit { model.add(draft.newRepo); draft.newRepo = "" }
+                        Button("Add") { model.add(draft.newRepo); draft.newRepo = "" }
                     }
                     Divider()
                     ForEach(model.watched, id: \.self) { ref in
@@ -337,10 +341,10 @@ struct ContentView: View {
                         }
                     }
                     HStack {
-                        TextField("paste PR URL", text: $newPR)
+                        TextField("paste PR URL", text: $draft.newPR)
                             .textFieldStyle(.roundedBorder)
-                            .onSubmit { model.addWatched(newPR); newPR = "" }
-                        Button("Watch") { model.addWatched(newPR); newPR = "" }
+                            .onSubmit { model.addWatched(draft.newPR); draft.newPR = "" }
+                        Button("Watch") { model.addWatched(draft.newPR); draft.newPR = "" }
                     }
                     Toggle("Show merged today", isOn: $model.showMerged)
                         .onChange(of: model.showMerged) { model.save() }

@@ -16,6 +16,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
-swiftc -O -parse-as-library main.swift -o "$APP/Contents/MacOS/PRQueue"
+swiftc -O -target arm64-apple-macos14 -parse-as-library main.swift -o "$APP/Contents/MacOS/PRQueue"
 codesign --force --sign - "$APP"
 echo "built $APP"
