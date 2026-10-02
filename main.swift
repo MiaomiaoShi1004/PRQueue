@@ -97,6 +97,8 @@ final class Model: ObservableObject {
     }
 
     func refresh() {
+        repos = UserDefaults.standard.stringArray(forKey: "repos") ?? []
+        watched = UserDefaults.standard.stringArray(forKey: "watched") ?? []
         let repos = self.repos
         let watched = self.watched
         guard !repos.isEmpty || !watched.isEmpty else {
